@@ -218,10 +218,11 @@ parse_field(const struct mf_field *mf, const char *s, struct match *match,
 {
     union mf_value value, mask;
     char *error;
+    int len;
 
-    error = mf_parse(mf, s, &value, &mask);
+    error = mf_parse(mf, s, &value, &mask, &len);
     if (!error) {
-        *usable_protocols &= mf_set(mf, &value, &mask, match);
+        *usable_protocols &= mf_set(mf, &value, &mask, match, len);
     }
     return error;
 }
@@ -1054,7 +1055,8 @@ parse_ofp_exact_flow(struct flow *flow, struct flow *mask, const char *s,
                     mask->in_port.ofp_port = u16_to_ofp(ntohs(OVS_BE16_MAX));
                 }
             } else {
-                field_error = mf_parse_value(mf, value_s, &value);
+                int len;
+                field_error = mf_parse_value(mf, value_s, &value, &len);
                 if (field_error) {
                     error = xasprintf("%s: bad value for %s (%s)",
                                       s, key, field_error);

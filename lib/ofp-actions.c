@@ -2459,6 +2459,7 @@ set_field_parse__(char *arg, struct ofpbuf *ofpacts,
     char *key;
     const struct mf_field *mf;
     char *error;
+    int len;
 
     value = arg;
     delim = strstr(arg, "->");
@@ -2479,7 +2480,7 @@ set_field_parse__(char *arg, struct ofpbuf *ofpacts,
     }
     sf->field = mf;
     delim[0] = '\0';
-    error = mf_parse(mf, value, &sf->value, &sf->mask);
+    error = mf_parse(mf, value, &sf->value, &sf->mask, &len);
     if (error) {
         return error;
     }

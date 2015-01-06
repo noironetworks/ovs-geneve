@@ -1363,6 +1363,27 @@ enum OVS_PACKED_ENUM mf_field_id {
      */
     MFF_ND_TLL,
 
+    /*
+     * "tun_metadata".
+     *
+     * Encap metadata for tunnels.
+     *
+     * Each NXM can carry upto 255 bytes of encap metadata when not masked or
+     * upto 127 bytes of encap metadata followed by equal length mask when
+     * masked.
+     *
+     * Type: bytestring.
+     * Maskable: bitwise.
+     * Formatting: tun_metadata.
+     * Prerequisites: none.
+     * Access: read/write.
+     * NXM: NXM_NX_TUN_METADATA(37) since v2.0.
+     * OXM: none.
+     * Prefix lookup member: tunnel.metadata.
+     *
+     */
+    MFF_TUN_METADATA,
+
     MFF_N_IDS
 };
 
@@ -1448,6 +1469,7 @@ enum OVS_PACKED_ENUM mf_string {
     MFS_FRAG,                   /* no, yes, first, later, not_later */
     MFS_TNL_FLAGS,              /* FLOW_TNL_F_* flags */
     MFS_TCP_FLAGS,              /* TCP_* flags */
+    MFS_TUN_METADATA,           /* tunnel metadata upto 255 bytes */
 };
 
 struct mf_field {
@@ -1505,12 +1527,10 @@ union mf_value {
     ovs_be32 be32;
     ovs_be16 be16;
     uint8_t u8;
+    uint8_t tun_metadata[TUN_METADATA_LEN];
 };
-BUILD_ASSERT_DECL(sizeof(union mf_value) == 16);
-
-/* An all-1-bits mf_value.  Needs to be updated if struct mf_value grows.*/
-#define MF_EXACT_MASK_INITIALIZER { IN6ADDR_EXACT_INIT }
-BUILD_ASSERT_DECL(sizeof(union mf_value) == sizeof(struct in6_addr));
+BUILD_ASSERT_DECL(sizeof(union mf_value) == TUN_METADATA_LEN);
+BUILD_ASSERT_DECL(TUN_METADATA_LEN >= 16);
 
 /* Part of a field. */
 struct mf_subfield {
@@ -1525,12 +1545,13 @@ struct mf_subfield {
  * value" contains NXM_OF_VLAN_TCI[0..11], then one could access the
  * corresponding data in value.be16[7] as the bits in the mask htons(0xfff). */
 union mf_subvalue {
-    uint8_t u8[16];
-    ovs_be16 be16[8];
-    ovs_be32 be32[4];
-    ovs_be64 be64[2];
+    uint8_t u8[TUN_METADATA_LEN];
+    ovs_be16 be16[TUN_METADATA_LEN >> 1];
+    ovs_be32 be32[TUN_METADATA_LEN >> 2];
+    ovs_be64 be64[TUN_METADATA_LEN >> 3];
 };
 BUILD_ASSERT_DECL(sizeof(union mf_value) == sizeof (union mf_subvalue));
+BUILD_ASSERT_DECL(TUN_METADATA_LEN % 8 == 0);
 
 /* Finding mf_fields. */
 const struct mf_field *mf_from_name(const char *name);
@@ -1566,7 +1587,7 @@ bool mf_is_value_valid(const struct mf_field *, const union mf_value *value);
 void mf_get_value(const struct mf_field *, const struct flow *,
                   union mf_value *value);
 void mf_set_value(const struct mf_field *, const union mf_value *value,
-                  struct match *);
+                  struct match *, int);
 void mf_set_flow_value(const struct mf_field *, const union mf_value *value,
                        struct flow *);
 void mf_set_flow_value_masked(const struct mf_field *,
@@ -1583,9 +1604,10 @@ void mf_get(const struct mf_field *, const struct match *,
 enum ofputil_protocol mf_set(const struct mf_field *,
                              const union mf_value *value,
                              const union mf_value *mask,
-                             struct match *);
+                             struct match *, int);
 
-void mf_set_wild(const struct mf_field *, struct match *);
+void mf_set_wild(const struct mf_field *, const union mf_value *value,
+                 struct match *, int);
 
 /* Subfields. */
 void mf_write_subfield_flow(const struct mf_subfield *,
@@ -1603,8 +1625,9 @@ enum ofperr mf_check_dst(const struct mf_subfield *, const struct flow *);
 
 /* Parsing and formatting. */
 char *mf_parse(const struct mf_field *, const char *,
-               union mf_value *value, union mf_value *mask);
-char *mf_parse_value(const struct mf_field *, const char *, union mf_value *);
+               union mf_value *value, union mf_value *mask, int *);
+char *mf_parse_value(const struct mf_field *, const char *, union mf_value *,
+                     int *);
 void mf_format(const struct mf_field *,
                const union mf_value *value, const union mf_value *mask,
                struct ds *);

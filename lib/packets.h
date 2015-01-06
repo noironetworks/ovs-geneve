@@ -31,6 +31,8 @@
 struct ofpbuf;
 struct ds;
 
+#define TUN_METADATA_LEN 40
+
 /* Tunnel information used in flow key and metadata. */
 struct flow_tnl {
     ovs_be64 tun_id;
@@ -41,6 +43,7 @@ struct flow_tnl {
     uint8_t ip_ttl;
     ovs_be16 tp_src;
     ovs_be16 tp_dst;
+    uint8_t metadata[TUN_METADATA_LEN];
 };
 
 /* Unfortunately, a "struct flow" sometimes has to handle OpenFlow port

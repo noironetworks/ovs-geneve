@@ -33,6 +33,7 @@
 #include "shash.h"
 #include "unaligned.h"
 #include "util.h"
+#include "tun-metadata.h"
 #include "openvswitch/vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(nx_match);
@@ -415,14 +416,13 @@ nx_pull_header(struct ofpbuf *b, const struct mf_field **field, bool *masked)
 }
 
 static enum ofperr
-nx_pull_match_entry(struct ofpbuf *b, bool allow_cookie,
+nx_pull_match_entry(struct ofpbuf *b, bool allow_cookie, uint64_t *header,
                     const struct mf_field **field,
                     union mf_value *value, union mf_value *mask)
 {
     enum ofperr error;
-    uint64_t header;
 
-    error = nx_pull_entry__(b, allow_cookie, &header, field, value, mask);
+    error = nx_pull_entry__(b, allow_cookie, header, field, value, mask);
     if (error) {
         return error;
     }
@@ -459,8 +459,10 @@ nx_pull_raw(const uint8_t *p, unsigned int match_len, bool strict,
         union mf_value value;
         union mf_value mask;
         enum ofperr error;
+        uint64_t header;
 
-        error = nx_pull_match_entry(&b, cookie != NULL, &field, &value, &mask);
+        error = nx_pull_match_entry(&b, cookie != NULL, &header,
+                                    &field, &value, &mask);
         if (error) {
             if (error == OFPERR_OFPBMC_BAD_FIELD && !strict) {
                 continue;
@@ -476,10 +478,12 @@ nx_pull_raw(const uint8_t *p, unsigned int match_len, bool strict,
             }
         } else if (!mf_are_prereqs_ok(field, &match->flow)) {
             error = OFPERR_OFPBMC_BAD_PREREQ;
-        } else if (!mf_is_all_wild(field, &match->wc)) {
+        } else if (field->id != MFF_TUN_METADATA &&
+                   !mf_is_all_wild(field, &match->wc)) {
             error = OFPERR_OFPBMC_DUP_FIELD;
         } else {
-            mf_set(field, &value, &mask, match);
+            mf_set(field, &value, &mask, match,
+                   MIN(field->n_bytes, nxm_field_bytes(header)));
         }
 
         if (error) {
@@ -612,6 +616,25 @@ nxm_put(struct ofpbuf *b, enum mf_field_id field, enum ofp_version version,
     if (!is_all_zeros(mask, n_bytes)) {
         bool masked = !is_all_ones(mask, n_bytes);
         nx_put_header(b, field, version, masked);
+        ofpbuf_put(b, value, n_bytes);
+        if (masked) {
+            ofpbuf_put(b, mask, n_bytes);
+        }
+    }
+}
+
+/* Behaves same as nxm_put except builds a header of length n_bytes */
+static void
+nxm_put_variable_len(struct ofpbuf *b, enum mf_field_id field,
+                     enum ofp_version version, const void *value,
+                     const void *mask, size_t n_bytes)
+{
+    uint64_t header = mf_oxm_header(field, version);
+    if (!is_all_zeros(mask, n_bytes)) {
+        bool masked = !is_all_ones(mask, n_bytes);
+        header = NXM_HEADER(nxm_vendor(header), nxm_class(header),
+                            nxm_field(header), masked, n_bytes);
+        nx_put_header__(b, header, masked);
         ofpbuf_put(b, value, n_bytes);
         if (masked) {
             ofpbuf_put(b, mask, n_bytes);
@@ -795,6 +818,24 @@ nxm_put_ip(struct ofpbuf *b, const struct match *match, enum ofp_version oxm)
     }
 }
 
+static void
+nxm_put_tun_metadata(struct ofpbuf *b, enum ofp_version oxm,
+                    const struct match *match)
+{
+    uint16_t len, ofs;
+    const struct flow *flow = &match->flow;
+    const uint8_t *metadata = flow->tunnel.metadata;
+    const uint8_t *mask = match->wc.masks.tunnel.metadata;
+
+    while (tun_metadata_get_lenofs(metadata, &len, &ofs)) {
+        nxm_put_variable_len(b, MFF_TUN_METADATA, oxm, metadata, mask, len);
+        metadata += len;
+        mask += len;
+    }
+
+    ovs_assert(metadata - flow->tunnel.metadata <= TUN_METADATA_LEN);
+}
+
 /* Appends to 'b' the nx_match format that expresses 'match'.  For Flow Mod and
  * Flow Stats Requests messages, a 'cookie' and 'cookie_mask' may be supplied.
  * Otherwise, 'cookie_mask' should be zero.
@@ -922,6 +963,7 @@ nx_put_raw(struct ofpbuf *b, enum ofp_version oxm, const struct match *match,
                 flow->tunnel.ip_src, match->wc.masks.tunnel.ip_src);
     nxm_put_32m(b, MFF_TUN_DST, oxm,
                 flow->tunnel.ip_dst, match->wc.masks.tunnel.ip_dst);
+    nxm_put_tun_metadata(b, oxm, match);
 
     /* Registers. */
     if (oxm < OFP15_VERSION) {
@@ -1774,7 +1816,12 @@ nxm_field_by_header(uint64_t header)
     const struct nxm_field_index *nfi;
 
     nxm_init();
-    if (nxm_hasmask(header)) {
+    /* tun metadata is variable length and we need to correct
+     * the length before we can do a hash lookup */
+    if (nxm_class(header) == 1 && nxm_field(header) == 37) {
+        header = NXM_HEADER(nxm_vendor(header), nxm_class(header),
+                            nxm_field(header), 0, TUN_METADATA_LEN);
+    } else if (nxm_hasmask(header)) {
         header = nxm_make_exact_header(header);
     }
 

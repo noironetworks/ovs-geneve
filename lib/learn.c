@@ -253,8 +253,9 @@ learn_parse_spec(const char *orig, char *name, char *value,
         const struct mf_field *dst = mf_from_name(name);
         union mf_value imm;
         char *error;
+        int len;
 
-        error = mf_parse_value(dst, value, &imm);
+        error = mf_parse_value(dst, value, &imm, &len);
         if (error) {
             return error;
         }

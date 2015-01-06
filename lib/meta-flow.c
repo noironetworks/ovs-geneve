@@ -35,6 +35,7 @@
 #include "socket-util.h"
 #include "unaligned.h"
 #include "util.h"
+#include "tun-metadata.h"
 #include "openvswitch/vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(meta_flow);
@@ -60,6 +61,10 @@ static struct shash mf_by_name;
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
 
 static void nxm_init(void);
+static void mf_initialize_exact_mask(union mf_value *value)
+{
+    memset(value, 0xff, sizeof *value);
+}
 
 /* Returns the field with the given 'name', or a null pointer if no field has
  * that name. */
@@ -215,6 +220,8 @@ mf_is_all_wild(const struct mf_field *mf, const struct flow_wildcards *wc)
         return !wc->masks.tp_dst;
     case MFF_TCP_FLAGS:
         return !wc->masks.tcp_flags;
+    case MFF_TUN_METADATA:
+        return is_all_zeros(wc->masks.tunnel.metadata, TUN_METADATA_LEN);
 
     case MFF_N_IDS:
     default:
@@ -312,8 +319,8 @@ mf_are_prereqs_ok(const struct mf_field *mf, const struct flow *flow)
 void
 mf_mask_field_and_prereqs(const struct mf_field *mf, struct flow *mask)
 {
-    static const union mf_value exact_match_mask = MF_EXACT_MASK_INITIALIZER;
-
+    static union mf_value exact_match_mask;
+    mf_initialize_exact_mask(&exact_match_mask);
     mf_set_flow_value(mf, &exact_match_mask, mask);
 
     switch (mf->prereqs) {
@@ -402,6 +409,7 @@ mf_is_value_valid(const struct mf_field *mf, const union mf_value *value)
     case MFF_ND_TARGET:
     case MFF_ND_SLL:
     case MFF_ND_TLL:
+    case MFF_TUN_METADATA:
         return true;
 
     case MFF_IN_PORT_OXM:
@@ -649,6 +657,10 @@ mf_get_value(const struct mf_field *mf, const struct flow *flow,
         value->ipv6 = flow->nd_target;
         break;
 
+    case MFF_TUN_METADATA:
+        memcpy(value->tun_metadata, flow->tunnel.metadata, TUN_METADATA_LEN);
+        break;
+
     case MFF_N_IDS:
     default:
         OVS_NOT_REACHED();
@@ -660,7 +672,7 @@ mf_get_value(const struct mf_field *mf, const struct flow *flow,
  * prerequisites. */
 void
 mf_set_value(const struct mf_field *mf,
-             const union mf_value *value, struct match *match)
+             const union mf_value *value, struct match *match, int len)
 {
     switch (mf->id) {
     case MFF_DP_HASH:
@@ -857,6 +869,10 @@ mf_set_value(const struct mf_field *mf,
         match_set_icmp_code(match, value->u8);
         break;
 
+    case MFF_TUN_METADATA:
+        match_set_tun_metadata(match, value->tun_metadata, len);
+        break;
+
     case MFF_ND_TARGET:
         match_set_nd_target(match, &value->ipv6);
         break;
@@ -872,7 +888,8 @@ mf_set_value(const struct mf_field *mf,
 void
 mf_mask_field(const struct mf_field *mf, struct flow *mask)
 {
-    static const union mf_value exact_match_mask = MF_EXACT_MASK_INITIALIZER;
+    static union mf_value exact_match_mask;
+    mf_initialize_exact_mask(&exact_match_mask);
 
     /* For MFF_DL_VLAN, we cannot send a all 1's to flow_set_dl_vlan()
      * as that will be considered as OFP10_VLAN_NONE. So consider it as a
@@ -1087,6 +1104,10 @@ mf_set_flow_value(const struct mf_field *mf,
         flow->nd_target = value->ipv6;
         break;
 
+    case MFF_TUN_METADATA:
+        memcpy(flow->tunnel.metadata, value->tun_metadata, TUN_METADATA_LEN);
+        break;
+
     case MFF_N_IDS:
     default:
         OVS_NOT_REACHED();
@@ -1141,7 +1162,9 @@ mf_is_zero(const struct mf_field *mf, const struct flow *flow)
  * The caller is responsible for ensuring that 'match' meets 'mf''s
  * prerequisites. */
 void
-mf_set_wild(const struct mf_field *mf, struct match *match)
+mf_set_wild(const struct mf_field *mf,
+            const union mf_value *value OVS_UNUSED,
+            struct match *match, int len OVS_UNUSED)
 {
     switch (mf->id) {
     case MFF_DP_HASH:
@@ -1341,6 +1364,11 @@ mf_set_wild(const struct mf_field *mf, struct match *match)
         memset(&match->flow.nd_target, 0, sizeof match->flow.nd_target);
         break;
 
+    case MFF_TUN_METADATA:
+         memset(match->flow.tunnel.metadata, 0, TUN_METADATA_LEN);
+         memset(match->wc.masks.tunnel.metadata, 0, TUN_METADATA_LEN);
+         break;
+
     case MFF_N_IDS:
     default:
         OVS_NOT_REACHED();
@@ -1361,13 +1389,19 @@ mf_set_wild(const struct mf_field *mf, struct match *match)
 enum ofputil_protocol
 mf_set(const struct mf_field *mf,
        const union mf_value *value, const union mf_value *mask,
-       struct match *match)
+       struct match *match, int len)
 {
-    if (!mask || is_all_ones(mask, mf->n_bytes)) {
-        mf_set_value(mf, value, match);
+    if (mf->id == MFF_TUN_METADATA) {
+        ovs_assert(len <= mf->n_bytes);
+    } else {
+        ovs_assert(len == mf->n_bytes);
+    }
+
+    if (!mask || is_all_ones(mask, len)) {
+        mf_set_value(mf, value, match, len);
         return mf->usable_protocols_exact;
-    } else if (is_all_zeros(mask, mf->n_bytes)) {
-        mf_set_wild(mf, match);
+    } else if (is_all_zeros(mask, len)) {
+        mf_set_wild(mf, value, match, len);
         return OFPUTIL_P_ANY;
     }
 
@@ -1481,7 +1515,7 @@ mf_set(const struct mf_field *mf,
 
     case MFF_IPV6_LABEL:
         if ((mask->be32 & htonl(IPV6_LABEL_MASK)) == htonl(IPV6_LABEL_MASK)) {
-            mf_set_value(mf, value, match);
+            mf_set_value(mf, value, match, mf->n_bytes);
         } else {
             match_set_ipv6_label_masked(match, value->be32, mask->be32);
         }
@@ -1517,6 +1551,11 @@ mf_set(const struct mf_field *mf,
 
     case MFF_TCP_FLAGS:
         match_set_tcp_flags_masked(match, value->be16, mask->be16);
+        break;
+
+    case MFF_TUN_METADATA:
+        match_set_tun_metadata_masked(match, value->tun_metadata,
+                                      mask->tun_metadata, len);
         break;
 
     case MFF_N_IDS:
@@ -1934,14 +1973,56 @@ mf_from_tcp_flags_string(const char *s, ovs_be16 *flagsp, ovs_be16 *maskp)
     return NULL;
 }
 
+static char *
+mf_from_tun_metadata_string(const struct mf_field *mf, const char *s,
+                            int *len, uint8_t tun_metadata[TUN_METADATA_LEN],
+                            uint8_t mask[TUN_METADATA_LEN])
+{
+    unsigned int i,j;
+
+    ovs_assert(mf->n_bytes == TUN_METADATA_LEN);
+
+    for (i = 0; i < TUN_METADATA_LEN; i++) {
+         if (*s == '/' || *s == '\0') {
+             break;
+         }
+         sscanf(s, "%2"SCNx8, &tun_metadata[i]);
+         s += 2 * sizeof(char);
+    }
+
+    *len = i;
+
+    if (i < 3) {
+        return xasprintf("tunnel metadata too short");
+    }
+
+    if (*s == '\0') {
+        memset(mask, 0xff, i);
+        return NULL;
+    }
+
+    s += sizeof(char);
+
+    for (j = 0; j < i; j++) {
+         if (*s == '\0') {
+             memset(mask + j, 0, i - j);
+             break;
+         }
+         sscanf(s, "%2"SCNx8, &mask[j]);
+         s += 2 * sizeof(char);
+    }
+
+    return NULL;
+}
 
 /* Parses 's', a string value for field 'mf', into 'value' and 'mask'.  Returns
  * NULL if successful, otherwise a malloc()'d string describing the error. */
 char *
 mf_parse(const struct mf_field *mf, const char *s,
-         union mf_value *value, union mf_value *mask)
+         union mf_value *value, union mf_value *mask, int *len)
 {
     char *error;
+    *len = mf->n_bytes;
 
     if (!strcmp(s, "*")) {
         memset(value, 0, mf->n_bytes);
@@ -1990,6 +2071,11 @@ mf_parse(const struct mf_field *mf, const char *s,
         error = mf_from_tcp_flags_string(s, &value->be16, &mask->be16);
         break;
 
+    case MFS_TUN_METADATA:
+        error = mf_from_tun_metadata_string(mf, s, len, value->tun_metadata,
+                                            mask->tun_metadata);
+        break;
+
     default:
         OVS_NOT_REACHED();
     }
@@ -2003,17 +2089,18 @@ mf_parse(const struct mf_field *mf, const char *s,
 /* Parses 's', a string value for field 'mf', into 'value'.  Returns NULL if
  * successful, otherwise a malloc()'d string describing the error. */
 char *
-mf_parse_value(const struct mf_field *mf, const char *s, union mf_value *value)
+mf_parse_value(const struct mf_field *mf, const char *s, union mf_value *value,
+               int *len)
 {
     union mf_value mask;
     char *error;
 
-    error = mf_parse(mf, s, value, &mask);
+    error = mf_parse(mf, s, value, &mask, len);
     if (error) {
         return error;
     }
 
-    if (!is_all_ones((const uint8_t *) &mask, mf->n_bytes)) {
+    if (!is_all_ones((const uint8_t *) &mask, *len)) {
         return xasprintf("%s: wildcards not allowed here", s);
     }
     return NULL;
@@ -2083,6 +2170,23 @@ mf_format_tcp_flags_string(ovs_be16 value, ovs_be16 mask, struct ds *s)
                         TCP_FLAGS(mask));
 }
 
+static void
+mf_format_tun_metadata_string(const uint8_t tun_metadata[TUN_METADATA_LEN],
+                              const uint8_t mask[TUN_METADATA_LEN],
+                              struct ds *s)
+{
+    unsigned int i;
+    for (i = 0; i < TUN_METADATA_LEN; i++) {
+         ds_put_format(s, "%02x", tun_metadata[i]);
+    }
+    if (mask == NULL)
+        return;
+    ds_put_char(s, '/');
+    for (i = 0; i < TUN_METADATA_LEN; i++) {
+         ds_put_format(s, "%02x", mask[i]);
+    }
+}
+
 /* Appends to 's' a string representation of field 'mf' whose value is in
  * 'value' and 'mask'.  'mask' may be NULL to indicate an exact match. */
 void
@@ -2144,6 +2248,11 @@ mf_format(const struct mf_field *mf,
                                    mask ? mask->be16 : OVS_BE16_MAX, s);
         break;
 
+    case MFS_TUN_METADATA:
+        mf_format_tun_metadata_string(value->tun_metadata, mask->tun_metadata,
+                                      s);
+        break;
+
     default:
         OVS_NOT_REACHED();
     }
@@ -2178,7 +2287,7 @@ mf_write_subfield(const struct mf_subfield *sf, const union mf_subvalue *x,
     mf_get(field, match, &value, &mask);
     bitwise_copy(x, sizeof *x, 0, &value, field->n_bytes, sf->ofs, sf->n_bits);
     bitwise_one (                 &mask,  field->n_bytes, sf->ofs, sf->n_bits);
-    mf_set(field, &value, &mask, match);
+    mf_set(field, &value, &mask, match, field->n_bytes);
 }
 
 /* Initializes 'x' to the value of 'sf' within 'flow'.  'sf' must be valid for

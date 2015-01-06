@@ -19,7 +19,8 @@ TYPES = {"u8": 1,
          "be32": 4,
          "MAC": 6,
          "be64": 8,
-         "IPv6": 16}
+         "IPv6": 16,
+         "bytestring": 40}
 
 FORMATTING = {"decimal":            ("MFS_DECIMAL",      1, 8),
               "hexadecimal":        ("MFS_HEXADECIMAL",  1, 8),
@@ -30,7 +31,8 @@ FORMATTING = {"decimal":            ("MFS_DECIMAL",      1, 8),
               "OpenFlow 1.1+ port": ("MFS_OFP_PORT_OXM", 4, 4),
               "frag":               ("MFS_FRAG",         1, 1),
               "tunnel flags":       ("MFS_TNL_FLAGS",    2, 2),
-              "TCP flags":          ("MFS_TCP_FLAGS",    2, 2)}
+              "TCP flags":          ("MFS_TCP_FLAGS",    2, 2),
+              "tun_metadata":       ("MFS_TUN_METADATA", 1, 40)}
 
 PREREQS = {"none": "MFP_NONE",
           "ARP": "MFP_ARP",

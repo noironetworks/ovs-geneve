@@ -855,6 +855,34 @@ format_flow_tunnel(struct ds *s, const struct match *match)
         format_flags(s, flow_tun_flag_to_string, tnl->flags, '|');
         ds_put_char(s, ',');
     }
+    /*
+     * TODO: This needs to be split into OXMs similar to how
+     * they were provided by the end user. convert this into
+     * a metadata format function that can be invoked for as
+     * many oxms as there are in the flow_tnl
+     */
+    if (!is_all_zeros(wc->masks.tunnel.metadata, TUN_METADATA_LEN)) {
+        unsigned int i = TUN_METADATA_LEN - 1, j;
+        while (i--) {
+            if (wc->masks.tunnel.metadata[i])
+                break;
+        }
+        ds_put_format(s, "tun_metadata=");
+        for (j = 0; j <= i; j++) {
+             if (tnl->metadata[j] == 0)
+                 ds_put_format(s, "xx");
+             else
+                 ds_put_format(s, "%2"SCNx8, tnl->metadata[j]);
+        }
+        ds_put_char(s, '/');
+        for (j = 0; j <= i; j++) {
+             if (wc->masks.tunnel.metadata[j] == 0)
+                 ds_put_format(s, "00");
+             else
+                 ds_put_format(s, "%2"SCNx8, wc->masks.tunnel.metadata[j]);
+        }
+        ds_put_char(s, ',');
+    }
 }
 
 /* Appends a string representation of 'match' to 's'.  If 'priority' is

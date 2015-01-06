@@ -38,6 +38,7 @@
 #include "unaligned.h"
 #include "util.h"
 #include "openvswitch/vlog.h"
+#include "tun-metadata.h"
 
 VLOG_DEFINE_THIS_MODULE(odp_util);
 
@@ -1271,7 +1272,7 @@ tunnel_key_attr_len(int type)
 }
 
 #define GENEVE_OPT(class, type) ((OVS_FORCE uint32_t)(class) << 8 | (type))
-static int
+static int OVS_UNUSED
 parse_geneve_opts(const struct nlattr *attr)
 {
     int opts_len = nl_attr_get_size(attr);
@@ -1354,7 +1355,7 @@ odp_tun_key_from_attr(const struct nlattr *attr, struct flow_tnl *tun)
             tun->flags |= FLOW_TNL_F_OAM;
             break;
         case OVS_TUNNEL_KEY_ATTR_GENEVE_OPTS: {
-            if (parse_geneve_opts(a)) {
+            if (geneve_nlattr_to_tun_metadata(a, tun->metadata)) {
                 return ODP_FIT_ERROR;
             }
             /* It is necessary to reproduce options exactly (including order)
@@ -1415,7 +1416,10 @@ tun_key_to_attr(struct ofpbuf *a, const struct flow_tnl *tun_key)
     if (tun_key->flags & FLOW_TNL_F_OAM) {
         nl_msg_put_flag(a, OVS_TUNNEL_KEY_ATTR_OAM);
     }
-
+    if (!is_all_zeros(tun_key->metadata, TUN_METADATA_LEN)) {
+        nl_msg_put_unspec(a, OVS_TUNNEL_KEY_ATTR_GENEVE_OPTS,
+                          tun_key->metadata, TUN_METADATA_LEN);
+    }
     nl_msg_end_nested(a, tun_key_ofs);
 }
 
