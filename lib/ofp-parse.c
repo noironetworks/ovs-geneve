@@ -1041,7 +1041,7 @@ parse_ofp_exact_flow(struct flow *flow, struct flow *mask, const char *s,
                 goto exit;
             }
 
-            if (!mf_is_zero(mf, flow)) {
+            if (mf->id != MFF_TUN_METADATA && !mf_is_zero(mf, flow)) {
                 error = xasprintf("%s: field %s set multiple times", s, key);
                 goto exit;
             }

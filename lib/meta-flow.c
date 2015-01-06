@@ -908,6 +908,7 @@ void
 mf_set_flow_value(const struct mf_field *mf,
                   const union mf_value *value, struct flow *flow)
 {
+    uint16_t len, ofs;
     switch (mf->id) {
     case MFF_DP_HASH:
         flow->dp_hash = ntohl(value->be32);
@@ -1105,7 +1106,9 @@ mf_set_flow_value(const struct mf_field *mf,
         break;
 
     case MFF_TUN_METADATA:
-        memcpy(flow->tunnel.metadata, value->tun_metadata, TUN_METADATA_LEN);
+        if (tun_metadata_get_lenofs(value->tun_metadata, &len, &ofs)) {  
+            memcpy(flow->tunnel.metadata + ofs, value->tun_metadata, len);
+        }
         break;
 
     case MFF_N_IDS:
