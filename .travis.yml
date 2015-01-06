@@ -1,0 +1,26 @@
+language: c
+compiler:
+  - gcc
+  - clang
+
+before_install: ./.travis/prepare.sh
+
+env:
+  - OPTS="--disable-ssl"
+  - TESTSUITE=1 KERNEL=3.17.4
+  - KERNEL=3.17.4 DPDK=1
+  - TESTSUITE=1 OPTS="--enable-shared"
+  - KERNEL=3.17.4 DPDK=1 OPTS="--enable-shared"
+  - KERNEL=3.16.7
+  - KERNEL=3.14.25
+  - KERNEL=3.12.33
+  - KERNEL=3.10.61
+  - KERNEL=3.4.104
+  - KERNEL=2.6.32.64
+
+script: ./.travis/build.sh $OPTS
+
+notifications:
+  email:
+    recipients:
+      - secure: V7W+NdS3L1aXCMUo2EBmOIHeQHT76r78p3f25XFISz8D4a2FnXA2ydwQVbhiZxa+TRgrskY/iB5GU1fS70+qmIaGxnGAVRV8lIQVshoiaKuxvMcha0FdN4d44i1AmLiM2DK8r5k3+fEWTQCvq9mrXQnDJVEPpYfVGj5+b+9oBx8=
