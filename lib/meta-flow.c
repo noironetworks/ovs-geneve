@@ -1368,9 +1368,9 @@ mf_set_wild(const struct mf_field *mf,
         break;
 
     case MFF_TUN_METADATA:
-         memset(match->flow.tunnel.metadata, 0, TUN_METADATA_LEN);
-         memset(match->wc.masks.tunnel.metadata, 0, TUN_METADATA_LEN);
-         break;
+        memset(match->flow.tunnel.metadata, 0, TUN_METADATA_LEN);
+        memset(match->wc.masks.tunnel.metadata, 0, TUN_METADATA_LEN);
+        break;
 
     case MFF_N_IDS:
     default:

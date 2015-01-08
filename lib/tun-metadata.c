@@ -31,16 +31,19 @@ static bool initialized;
 /* table used to map tunnel metadata to a particular offset within
  * flow_tnl.metadata */
 struct tun_meta_table {
-    struct cmap cmap;         /* cmap */
+    struct cmap key_cmap;     /* lookup based on key */
+    struct cmap ofs_cmap;     /* lookup based on offset */
     struct ovs_mutex mutex;   /* protect simultaneous writers */
-    uint16_t next_ofs;        /* next offset in flow_tnl.metadata */
+    int next_ofs;             /* next offset in flow_tnl.metadata */
+    int count;                /* number of entries in table */
 };
 
 struct tun_meta_entry {
-    struct cmap_node node;    /* node in hashmap */
-    uint32_t key;             /* unique key */
-    uint16_t len;             /* len of this metadata */
-    uint16_t ofs;             /* offset in flow_tnl.metadata */
+    struct cmap_node key_node;    /* node in key_cmap */
+    struct cmap_node ofs_node;    /* node in ofs_cmap */
+    uint32_t key;                 /* unique key */
+    uint16_t len;                 /* len of this metadata */
+    uint16_t ofs;                 /* offset in flow_tnl.metadata */
 };
 
 static struct tun_meta_table tun_meta_table;
@@ -51,10 +54,11 @@ static inline uint32_t tun_meta_hash(uint32_t key)
 }
 
 static struct tun_meta_entry *
-tun_meta_find(const struct cmap *cmap, uint32_t key)
+tun_meta_find_key(const struct tun_meta_table *table, uint32_t key)
 {
     struct tun_meta_entry *entry;
-    CMAP_FOR_EACH_WITH_HASH (entry, node, tun_meta_hash(key), cmap) {
+    const struct cmap *key_cmap = &table->key_cmap;
+    CMAP_FOR_EACH_WITH_HASH (entry, key_node, tun_meta_hash(key), key_cmap) {
         if (entry->key == key) {
             return entry;
         }
@@ -62,63 +66,53 @@ tun_meta_find(const struct cmap *cmap, uint32_t key)
     return NULL;
 }
 
-static void OVS_UNUSED
-tun_meta_print(const char *name, const struct cmap *cmap)
+static struct tun_meta_entry *
+tun_meta_find_ofs(const struct tun_meta_table *table, uint16_t ofs)
 {
-    struct cmap_cursor cursor;
     struct tun_meta_entry *entry;
-    printf("%s:", name);
-    CMAP_CURSOR_FOR_EACH(entry, node, &cursor, cmap) {
-        printf(" (%x %d %d)", entry->key, entry->len, entry->ofs);
+    const struct cmap *ofs_cmap = &table->ofs_cmap;
+    CMAP_FOR_EACH_WITH_HASH (entry, ofs_node, tun_meta_hash(ofs), ofs_cmap) {
+        if (entry->ofs == ofs) {
+            return entry;
+        }
     }
+    return NULL;
 }
 
+/* callers responsibility to verify entry->len is same as len.
+ * returns an entry or null. */
 static struct tun_meta_entry *
-tun_meta_add(struct cmap *cmap, uint32_t key, uint16_t len, uint16_t ofs)
+tun_meta_add(struct tun_meta_table *table, uint32_t key, uint16_t len)
 {
-    struct tun_meta_entry *entry = xmalloc(sizeof *entry);
-    entry->key = key;
-    entry->len = len;
-    entry->ofs = ofs;
-    cmap_insert(cmap, &entry->node, tun_meta_hash(key));
-    return entry;
-}
-
-/* callers responsibility to verify entry->len is same as len */
-static struct tun_meta_entry *
-tun_meta_add_unique(struct tun_meta_table *table, uint32_t key, uint16_t len)
-{
-    struct tun_meta_entry *entry = tun_meta_find(&table->cmap, key);
+    struct tun_meta_entry *entry = tun_meta_find_key(table, key);
     if (entry == NULL) {
         ovs_mutex_lock(&table->mutex);
-        entry = tun_meta_add(&table->cmap, key, len, table->next_ofs);
-        table->next_ofs += len;
+        if (table->next_ofs + len <= TUN_METADATA_LEN) {
+            entry = xmalloc(sizeof *entry);
+            entry->key = key;
+            entry->len = len;
+            entry->ofs = table->next_ofs;
+            table->next_ofs += len;
+            cmap_insert(&table->key_cmap, &entry->key_node,
+                        tun_meta_hash(key));
+            cmap_insert(&table->ofs_cmap, &entry->ofs_node,
+                        tun_meta_hash(entry->ofs));
+            table->count++;
+        }
         ovs_mutex_unlock(&table->mutex);
     }
     return entry;
-}
-
-static void OVS_UNUSED
-tun_meta_remove(struct tun_meta_table *table, uint32_t key)
-{
-    struct cmap *cmap = &table->cmap;
-    struct tun_meta_entry *entry = tun_meta_find(cmap, key);
-    if (entry) {
-        ovs_mutex_lock(&table->mutex);
-        cmap_remove(cmap, &entry->node, tun_meta_hash(key));
-        /* FIXME make offset available */
-        ovs_mutex_unlock(&table->mutex);
-        ovsrcu_postpone(free, entry);
-    }
 }
 
 void
 tun_meta_init(void)
 {
     struct tun_meta_table *table = &tun_meta_table;
-    cmap_init(&table->cmap);
+    cmap_init(&table->key_cmap);
+    cmap_init(&table->ofs_cmap);
     ovs_mutex_init(&table->mutex);
     table->next_ofs = 0;
+    table->count = 0;
     initialized = true;
 }
 
@@ -126,16 +120,65 @@ void
 tun_meta_destroy(void)
 {
     struct tun_meta_table *table = &tun_meta_table;
-    struct cmap *cmap = &table->cmap;
     struct tun_meta_entry *entry;
+
+    if (!initialized) {
+        return;
+    }
+
     ovs_mutex_lock(&table->mutex);
-    CMAP_FOR_EACH(entry, node, cmap) {
-        cmap_remove(cmap, &entry->node, tun_meta_hash(entry->key));
+    CMAP_FOR_EACH(entry, key_node, &table->key_cmap) {
+        cmap_remove(&table->key_cmap, &entry->key_node,
+                    tun_meta_hash(entry->key));
+        cmap_remove(&table->ofs_cmap, &entry->ofs_node,
+                    tun_meta_hash(entry->ofs));
+        table->count--;
         ovsrcu_postpone(free, entry);
     }
-    cmap_destroy(cmap);
+    ovs_assert(table->count == 0);
+    table->next_ofs = 0;
+    cmap_destroy(&table->key_cmap);
+    cmap_destroy(&table->ofs_cmap);
     ovs_mutex_unlock(&table->mutex);
     ovs_mutex_destroy(&table->mutex);
+    initialized = false;
+}
+
+void
+tun_meta_remove_all(void)
+{
+    struct tun_meta_table *table = &tun_meta_table;
+    struct tun_meta_entry *entry;
+
+    if (!initialized) {
+        tun_meta_init();
+        return;
+    }
+
+    ovs_mutex_lock(&table->mutex);
+    CMAP_FOR_EACH(entry, key_node, &table->key_cmap) {
+        cmap_remove(&table->key_cmap, &entry->key_node,
+                    tun_meta_hash(entry->key));
+        cmap_remove(&table->ofs_cmap, &entry->ofs_node,
+                    tun_meta_hash(entry->ofs));
+        table->count--;
+        ovsrcu_postpone(free, entry);
+    }
+    ovs_assert(table->count == 0);
+    table->next_ofs = 0;
+    ovs_mutex_unlock(&table->mutex);
+}
+
+void
+tun_meta_print_keys(void)
+{
+    const struct tun_meta_table *table = &tun_meta_table;
+    struct cmap_cursor cursor;
+    struct tun_meta_entry *entry;
+    const struct cmap *key_cmap = &table->key_cmap;
+    CMAP_CURSOR_FOR_EACH(entry, key_node, &cursor, key_cmap) {
+        printf(" (%x %d %d)", entry->key, entry->len, entry->ofs);
+    }
 }
 
 #define TUN_META_KEY(metadata) \
@@ -153,8 +196,8 @@ find_or_add_tun_meta_entry(const uint8_t metadata[TUN_METADATA_LEN], int len)
         tun_meta_init();
     }
 
-    e = tun_meta_add_unique(&tun_meta_table, key, len);
-    if (e->len != len) {
+    e = tun_meta_add(&tun_meta_table, key, len);
+    if (e && (e->len != len)) {
         VLOG_ERR("duplicate metadata (key %x, len %d), new len %d",
                  key, e->len, len);
         return NULL;
@@ -172,7 +215,18 @@ find_tun_meta_entry(const uint8_t metadata[TUN_METADATA_LEN])
         tun_meta_init();
         return NULL;
     } else {
-      return tun_meta_find(&tun_meta_table.cmap, key);
+        return tun_meta_find_key(&tun_meta_table, key);
+    }
+}
+
+static struct tun_meta_entry *
+find_tun_meta_ofs(uint16_t ofs)
+{
+    if (!initialized) {
+        tun_meta_init();
+        return NULL;
+    } else {
+        return tun_meta_find_ofs(&tun_meta_table, ofs);
     }
 }
 
@@ -188,6 +242,26 @@ tun_metadata_get_lenofs(const uint8_t metadata[TUN_METADATA_LEN],
     } else {
         return false;
     }
+}
+
+bool
+tun_metadata_get_len(uint16_t ofs, uint16_t *len)
+{
+    const struct tun_meta_entry *e = find_tun_meta_ofs(ofs);
+    if (e) {
+        *len = e->len;
+        return true;
+    } else {
+        return false;
+    }
+}
+
+bool
+tun_metadata_valid(const uint8_t metadata[TUN_METADATA_LEN], 
+                   uint16_t len, uint16_t ofs)
+{
+    const struct tun_meta_entry *e = find_tun_meta_entry(metadata);
+    return (e && e->len == len && e->ofs == ofs) ? true : false;
 }
 
 /* copies a single tun_meta entry at the correct offset in

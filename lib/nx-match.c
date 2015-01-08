@@ -822,18 +822,19 @@ static void
 nxm_put_tun_metadata(struct ofpbuf *b, enum ofp_version oxm,
                     const struct match *match)
 {
-    uint16_t len, ofs;
+    uint16_t len, ofs = 0;
     const struct flow *flow = &match->flow;
     const uint8_t *metadata = flow->tunnel.metadata;
     const uint8_t *mask = match->wc.masks.tunnel.metadata;
 
-    while (tun_metadata_get_lenofs(metadata, &len, &ofs)) {
-        nxm_put_variable_len(b, MFF_TUN_METADATA, oxm, metadata, mask, len);
-        metadata += len;
-        mask += len;
+    while (tun_metadata_get_len(ofs, &len)) {
+        if (tun_metadata_valid(metadata + ofs, len, ofs)) {
+            nxm_put_variable_len(b, MFF_TUN_METADATA, oxm,
+                                 metadata + ofs, mask + ofs, len);
+        }
+        ofs += len;
     }
-
-    ovs_assert(metadata - flow->tunnel.metadata <= TUN_METADATA_LEN);
+    ovs_assert(ofs <= TUN_METADATA_LEN);
 }
 
 /* Appends to 'b' the nx_match format that expresses 'match'.  For Flow Mod and

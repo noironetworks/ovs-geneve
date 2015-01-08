@@ -22,6 +22,13 @@
 
 void tun_meta_init(void);
 void tun_meta_destroy(void);
+void tun_meta_remove_all(void);
+void tun_meta_print_keys(void);
+bool tun_metadata_get_lenofs(const uint8_t metadata[TUN_METADATA_LEN],
+                             uint16_t *len, uint16_t *ofs);
+bool tun_metadata_get_len(uint16_t ofs, uint16_t *len);
+bool tun_metadata_valid(const uint8_t metadata[TUN_METADATA_LEN],
+                        uint16_t len, uint16_t ofs);
 void match_set_tun_metadata(struct match *match,
                             const uint8_t metadata[TUN_METADATA_LEN],
                             int len);
@@ -29,8 +36,6 @@ void match_set_tun_metadata_masked(struct match *match,
                                    const uint8_t metadata[TUN_METADATA_LEN],
                                    const uint8_t mask[TUN_METADATA_LEN],
                                    int len);
-bool tun_metadata_get_lenofs(const uint8_t metadata[TUN_METADATA_LEN],
-                             uint16_t *len, uint16_t *ofs);
 int geneve_nlattr_to_tun_metadata(const struct nlattr *attr,
                                   uint8_t metadata[TUN_METADATA_LEN]);
 #endif /* tun-metadata.h */

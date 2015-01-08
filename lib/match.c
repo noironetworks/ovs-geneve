@@ -21,6 +21,7 @@
 #include "dynamic-string.h"
 #include "ofp-util.h"
 #include "packets.h"
+#include "tun-metadata.h"
 
 /* Converts the flow in 'flow' into a match in 'match', with the given
  * 'wildcards'. */
@@ -862,26 +863,23 @@ format_flow_tunnel(struct ds *s, const struct match *match)
      * many oxms as there are in the flow_tnl
      */
     if (!is_all_zeros(wc->masks.tunnel.metadata, TUN_METADATA_LEN)) {
-        unsigned int i = TUN_METADATA_LEN - 1, j;
-        while (i--) {
-            if (wc->masks.tunnel.metadata[i])
-                break;
+        uint16_t len, ofs = 0;
+        int i;
+        while (tun_metadata_get_len(ofs, &len)) {
+            if (tun_metadata_valid(tnl->metadata + ofs, len, ofs)) {
+                ds_put_format(s, "tun_metadata=");
+                for (i = 0; i < len; i++) {
+                    ds_put_format(s, "%2"SCNx8, tnl->metadata[ofs + i]);
+                }
+                ds_put_char(s, '/');
+                for (i = 0; i < len; i++) {
+                    ds_put_format(s, "%2"SCNx8, wc->masks.tunnel.metadata[i]);
+                }
+                ds_put_char(s, ',');
+            }
+            ofs += len;
+            ovs_assert(ofs <= TUN_METADATA_LEN);
         }
-        ds_put_format(s, "tun_metadata=");
-        for (j = 0; j <= i; j++) {
-             if (tnl->metadata[j] == 0)
-                 ds_put_format(s, "xx");
-             else
-                 ds_put_format(s, "%2"SCNx8, tnl->metadata[j]);
-        }
-        ds_put_char(s, '/');
-        for (j = 0; j <= i; j++) {
-             if (wc->masks.tunnel.metadata[j] == 0)
-                 ds_put_format(s, "00");
-             else
-                 ds_put_format(s, "%2"SCNx8, wc->masks.tunnel.metadata[j]);
-        }
-        ds_put_char(s, ',');
     }
 }
 
